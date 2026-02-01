@@ -15,16 +15,18 @@
         .btn-start { background: #f1c40f; color: black; width: 100%; display: none; }
         canvas { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
         .hidden { display: none !important; }
-        #crosshair { position: absolute; top: 50%; left: 50%; color: rgba(255,255,255,0.5); transform: translate(-50%, -50%); z-index: 20; pointer-events: none; font-size: 20px; }
+        #crosshair { position: absolute; top: 50%; left: 50%; color: white; transform: translate(-50%, -50%); z-index: 20; pointer-events: none; font-size: 24px; }
         #chat-container { position: absolute; bottom: 20px; left: 20px; width: 300px; z-index: 40; background: rgba(0,0,0,0.5); border-radius: 5px; display: flex; flex-direction: column; }
         #chat-messages { height: 120px; overflow-y: auto; color: white; font-size: 13px; padding: 10px; display: flex; flex-direction: column; border-bottom: 1px solid #333; }
         #chat-input { background: rgba(0,0,0,0.8); border: 1px solid #555; width: calc(100% - 20px); margin: 5px; padding: 5px; color: white; outline: none; }
+        #victory-msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #f1c40f; font-size: 80px; font-weight: bold; z-index: 100; display: none; text-shadow: 5px 5px #000; }
     </style>
 </head>
 <body>
 
 <div id="crosshair">+</div>
 <div id="game-stats">PÁGINAS: <span id="note-count">0</span>/8</div>
+<div id="victory-msg">YOU WON!</div>
 
 <div id="ui">
     <div id="lobby-panel">
@@ -34,7 +36,7 @@
             <button class="btn-join" onclick="connectToHost()">UNIRSE AL JUEGO</button>
         </div>
         <button id="start-btn" class="btn-start" onclick="startGame()">INICIAR PARTIDA</button>
-        <div id="status-msg" style="color: #f1c40f; margin-top: 10px;">Toca las paredes ROJAS</div>
+        <div id="status-msg" style="color: #f1c40f; margin-top: 10px;">Toca las paredes rojas para recogerlas</div>
     </div>
 </div>
 
@@ -51,6 +53,7 @@
     const chatMessages = document.getElementById('chat-messages');
     const chatInput = document.getElementById('chat-input');
     
+    // El mapa base (0: vacío, 1: pared normal, 2: página/pared roja)
     let worldMap = [
         [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
         [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
@@ -88,65 +91,57 @@
         conn.on('open', () => {
             connections[conn.peer] = conn;
             players[conn.peer] = { x: 1.5, y: 1.5, color: '#e67e22', isDead: false, lastSeen: Date.now() };
-            addChatMessage("Sistema", "Jugador conectado.");
             syncToAll();
         });
         conn.on('data', handleData);
-        conn.on('close', () => removePlayer(conn.peer));
     });
 
     function handleData(data) {
         if (data.type === 'move') {
             if(players[data.id]) {
-                players[data.id].x = data.x;
-                players[data.id].y = data.y;
-                players[data.id].isDead = data.isDead;
-                players[data.id].lastSeen = Date.now();
+                players[data.id].x = data.x; players[data.id].y = data.y;
+                players[data.id].isDead = data.isDead; players[data.id].lastSeen = Date.now();
             }
-        } else if (data.type === 'chat') {
-            addChatMessage(data.sender, data.text);
-            if (!hostConn) broadcast(data, data.sender);
+        } else if (data.type === 'collect') {
+            if (!hostConn) { // El host valida la recolección
+                if (worldMap[data.mx][data.my] === 2) {
+                    worldMap[data.mx][data.my] = 0;
+                    notesCollected++;
+                    checkVictory();
+                    syncToAll();
+                }
+            }
         } else if (data.type === 'update') {
-            worldMap = data.worldMap;
-            slenderman = data.slenderman;
+            worldMap = data.map;
             notesCollected = data.notesCollected;
+            slenderman = data.slenderman;
             if(data.gameStarted && !gameStarted) {
                 gameStarted = true;
                 document.getElementById('ui').classList.add('hidden');
             }
-            if(!data.gameStarted && gameStarted) resetToLobby();
             let incoming = data.players;
             for(let id in players) if(id !== myId && !incoming[id]) delete players[id];
             for(let id in incoming) if(id !== myId) players[id] = incoming[id];
-        } else if (data.type === 'collect') {
-            if(!hostConn) { // El host procesa la recoleccion
-                if(worldMap[data.mx][data.my] === 2) {
-                    worldMap[data.mx][data.my] = 0;
-                    notesCollected++;
-                    if(notesCollected >= 8) {
-                        alert("YOU WON!");
-                        gameStarted = false;
-                    }
-                    syncToAll();
-                }
-            }
         }
     }
 
-    function resetToLobby() {
-        gameStarted = false;
-        document.getElementById('ui').classList.remove('hidden');
-        document.exitPointerLock();
-        posX = 1.5; posY = 1.5;
+    function checkVictory() {
+        if (notesCollected >= 8) {
+            broadcast({ type: 'victory' });
+            showVictory();
+        }
     }
 
-    function removePlayer(peerId) {
-        if (players[peerId]) {
-            delete players[peerId];
-            if (connections[peerId]) { connections[peerId].close(); delete connections[peerId]; }
-            addChatMessage("Sistema", "Un jugador abandonó.");
-            syncToAll();
-        }
+    function showVictory() {
+        document.getElementById('victory-msg').style.display = 'block';
+        setTimeout(() => {
+            document.getElementById('victory-msg').style.display = 'none';
+            gameStarted = false;
+            notesCollected = 0;
+            document.getElementById('ui').classList.remove('hidden');
+            // Reset map
+            location.reload(); 
+        }, 3000);
     }
 
     function connectToHost() {
@@ -155,100 +150,55 @@
         hostConn = peer.connect(hId);
         hostConn.on('open', () => {
             document.getElementById('setup-controls').classList.add('hidden');
-            document.getElementById('status-msg').innerText = "Conectado. Esperando...";
-            setInterval(() => {
-                if(hostConn.open) hostConn.send({ type: 'move', id: myId, x: posX, y: posY, isDead: isDead });
-            }, 30);
+            setInterval(() => { if(hostConn.open) hostConn.send({ type: 'move', id: myId, x: posX, y: posY, isDead: isDead }); }, 30);
         });
-        hostConn.on('data', handleData);
+        hostConn.on('data', data => {
+            if(data.type === 'victory') showVictory();
+            else handleData(data);
+        });
     }
 
     function startGame() {
-        if (Object.keys(players).length < 1) return;
-        notesCollected = 0;
-        // Limpiar mapa de notas anteriores
-        for(let i=0; i<worldMap.length; i++) 
-            for(let j=0; j<worldMap[i].length; j++) if(worldMap[i][j] === 2) worldMap[i][j] = 0;
-        
-        // Colocar 8 paredes rojas (valor 2)
+        if (Object.keys(players).length < 1) return; // Permitir 1 para pruebas
         let placed = 0;
         while(placed < 8) {
-            let rx = Math.floor(Math.random()*13)+1;
-            let ry = Math.floor(Math.random()*13)+1;
-            if(worldMap[rx][ry] === 0 && (rx > 2 || ry > 2)) {
-                worldMap[rx][ry] = 2;
-                placed++;
-            }
+            let rx = Math.floor(Math.random()*13)+1, ry = Math.floor(Math.random()*13)+1;
+            if(worldMap[rx][ry] === 0 && (rx > 3 || ry > 3)) { worldMap[rx][ry] = 2; placed++; }
         }
         gameStarted = true;
-        slenderman.active = true;
         document.getElementById('ui').classList.add('hidden');
         syncToAll();
     }
 
-    function broadcast(data, exclude = null) {
-        for (let id in connections) if (connections[id].open && id !== exclude) connections[id].send(data);
-        if (hostConn && hostConn.open && exclude !== 'host') hostConn.send(data);
-    }
-
     function syncToAll() {
-        if(!hostConn) broadcast({ type: 'update', players, worldMap, slenderman, gameStarted, notesCollected });
+        if(!hostConn) broadcast({ type: 'update', players, map: worldMap, notesCollected, slenderman, gameStarted });
     }
 
-    function addChatMessage(sender, text) {
-        const div = document.createElement('div');
-        div.innerHTML = `<span style="color:#3498db">${sender.substring(0,5)}:</span> ${text}`;
-        chatMessages.appendChild(div);
-        chatMessages.scrollTop = chatMessages.scrollHeight;
+    function broadcast(data) {
+        for (let id in connections) if (connections[id].open) connections[id].send(data);
     }
 
-    function handleMovement() {
-        if(!gameStarted || isDead) return;
-        let step = moveSpeed;
-        let nextX = posX, nextY = posY;
-
-        if(keys['KeyW']) { nextX += dirX * step; nextY += dirY * step; }
-        if(keys['KeyS']) { nextX -= dirX * step; nextY -= dirY * step; }
-
-        // Colisión y Recolección
-        let checkX = Math.floor(nextX), checkY = Math.floor(nextY);
+    // --- INTERACCIÓN CON PARED ---
+    canvas.addEventListener('mousedown', () => {
+        if (!gameStarted || isDead) return;
+        // Lanzar un rayo corto para ver si tocamos una pared roja
+        let checkX = posX + dirX * 0.5;
+        let checkY = posY + dirY * 0.5;
+        let mx = Math.floor(checkX), my = Math.floor(checkY);
         
-        if(worldMap[checkX][Math.floor(posY)] === 2) {
-            collectNote(checkX, Math.floor(posY));
-        } else if(worldMap[Math.floor(posX)][checkY] === 2) {
-            collectNote(Math.floor(posX), checkY);
+        if (worldMap[mx] && worldMap[mx][my] === 2) {
+            if (hostConn) hostConn.send({ type: 'collect', mx, my });
+            else { worldMap[mx][my] = 0; notesCollected++; syncToAll(); checkVictory(); }
         }
+    });
 
-        if(worldMap[Math.floor(nextX)][Math.floor(posY)] === 0) posX = nextX;
-        if(worldMap[Math.floor(posX)][Math.floor(nextY)] === 0) posY = nextY;
-
-        if(!hostConn && slenderman.active) {
-            let angle = Math.atan2(posY - slenderman.y, posX - slenderman.x);
-            slenderman.x += Math.cos(angle) * 0.02;
-            slenderman.y += Math.sin(angle) * 0.02;
-        }
-    }
-
-    function collectNote(mx, my) {
-        if(hostConn) hostConn.send({type: 'collect', mx, my});
-        else {
-            worldMap[mx][my] = 0;
-            notesCollected++;
-            if(notesCollected >= 8) { alert("YOU WON!"); gameStarted = false; }
-            syncToAll();
-        }
-    }
-
+    // --- RENDER ---
     function render() {
         canvas.width = window.innerWidth; canvas.height = window.innerHeight;
         const w = canvas.width, h = canvas.height;
         ctx.fillStyle = "#000"; ctx.fillRect(0, 0, w, h);
 
-        if(!gameStarted) {
-            ctx.fillStyle = "white"; ctx.textAlign = "center"; 
-            ctx.fillText(notesCollected >= 8 ? "¡VICTORIA! ESPERANDO AL HOST" : "LOBBY", w/2, h/2);
-            requestAnimationFrame(render); return;
-        }
+        if(!gameStarted) { requestAnimationFrame(render); return; }
 
         let zBuffer = new Array(w);
         for(let x = 0; x < w; x++) {
@@ -268,48 +218,72 @@
                 else { sideDistY += deltaY; mapY += stepY; side = 1; }
                 if(worldMap[mapX][mapY] > 0) { hit = 1; wallType = worldMap[mapX][mapY]; }
             }
+            
             let perpDist = (side === 0) ? (sideDistX - deltaX) : (sideDistY - deltaY);
             zBuffer[x] = perpDist;
             let lineHeight = Math.floor(h / perpDist);
             
-            let colorBase = Math.max(0, 180 - (perpDist * 15));
-            if(wallType === 2) ctx.strokeStyle = `rgb(${colorBase}, 0, 0)`; // Pared roja (página)
-            else ctx.strokeStyle = `rgb(${side?colorBase*0.5:colorBase},${side?colorBase*0.5:colorBase},${side?colorBase*0.5:colorBase})`;
+            // Color de pared: Rojo si es tipo 2, Gris si es tipo 1
+            let colorVal = Math.max(0, 200 - (perpDist * 15));
+            if (wallType === 2) ctx.strokeStyle = `rgb(${colorVal}, 0, 0)`;
+            else ctx.strokeStyle = `rgb(${side?colorVal*0.5:colorVal},${side?colorVal*0.5:colorVal},${side?colorVal*0.5:colorVal})`;
             
+            ctx.lineWidth = 1;
             ctx.beginPath(); ctx.moveTo(x, h/2-lineHeight/2); ctx.lineTo(x, h/2+lineHeight/2); ctx.stroke();
         }
 
-        // Sprites (Jugadores y Slender)
-        let sprites = [];
-        if(slenderman.active) sprites.push({...slenderman, color:"#111", sX:0.5, sY:1.8});
-        for(let id in players) if(id !== myId && !players[id].isDead) sprites.push({...players[id], sX:0.4, sY:0.6});
-
-        sprites.sort((a,b) => Math.hypot(posX-b.x, posY-b.y) - Math.hypot(posX-a.x, posY-a.y));
-        sprites.forEach(s => {
-            let relX = s.x - posX, relY = s.y - posY;
+        // Sprites Jugadores
+        for(let id in players) {
+            if(id === myId || players[id].isDead) continue;
+            let relX = players[id].x - posX, relY = players[id].y - posY;
             let invDet = 1.0 / (planeX * dirY - dirX * planeY);
             let tx = invDet * (dirY * relX - dirX * relY), ty = invDet * (-planeY * relX + planeX * relY);
             if(ty > 0.1) {
                 let sx = Math.floor((w/2) * (1 + tx / ty));
-                let sh = Math.abs(Math.floor(h / ty)) * s.sY, sw = Math.abs(Math.floor(h / ty)) * s.sX;
+                let sh = Math.abs(Math.floor(h / ty)) * 0.6, sw = Math.abs(Math.floor(h / ty)) * 0.4;
                 if(sx > 0 && sx < w && ty < zBuffer[sx]) {
-                    ctx.fillStyle = s.color || "#e67e22";
+                    ctx.fillStyle = players[id].color;
                     ctx.fillRect(sx - sw/2, h/2 - sh/2, sw, sh);
                 }
             }
-        });
+        }
 
         document.getElementById('note-count').innerText = notesCollected;
         handleMovement();
         requestAnimationFrame(render);
     }
 
-    let keys = {};
-    window.onkeydown = e => { if(e.code === 'Enter') { if(document.activeElement === chatInput) { if(chatInput.value) { broadcast({type:'chat', sender:myId, text:chatInput.value}); addChatMessage(myId, chatInput.value); chatInput.value=''; chatInput.blur(); canvas.requestPointerLock(); } } else { chatInput.focus(); } } keys[e.code] = true; };
-    window.onkeyup = e => keys[e.code] = false;
-    document.addEventListener('mousemove', e => { if (document.pointerLockElement === canvas) { let rot = -e.movementX * mouseSensitivity; let oldDirX = dirX; dirX = dirX * Math.cos(rot) - dirY * Math.sin(rot); dirY = oldDirX * Math.sin(rot) + dirY * Math.cos(rot); let oldPlaneX = planeX; planeX = planeX * Math.cos(rot) - planeY * Math.sin(rot); planeY = oldPlaneX * Math.sin(rot) + planeY * Math.cos(rot); } });
-    canvas.addEventListener('click', () => canvas.requestPointerLock());
+    function handleMovement() {
+        if(!gameStarted || isDead) return;
+        let step = moveSpeed;
+        let keys = window.keys || {};
+        if(keys['KeyW']) {
+            if(worldMap[Math.floor(posX + dirX * step)][Math.floor(posY)] === 0) posX += dirX * step;
+            if(worldMap[Math.floor(posX)][Math.floor(posY + dirY * step)] === 0) posY += dirY * step;
+        }
+        if(keys['KeyS']) {
+            if(worldMap[Math.floor(posX - dirX * step)][Math.floor(posY)] === 0) posX -= dirX * step;
+            if(worldMap[Math.floor(posX)][Math.floor(posY - dirY * step)] === 0) posY -= dirY * step;
+        }
+    }
 
+    window.keys = {};
+    window.onkeydown = e => window.keys[e.code] = true;
+    window.onkeyup = e => window.keys[e.code] = false;
+    
+    document.addEventListener('mousemove', (e) => {
+        if (document.pointerLockElement === canvas) {
+            let rot = e.movementX * mouseSensitivity; 
+            let oldDirX = dirX;
+            dirX = dirX * Math.cos(rot) - dirY * Math.sin(rot);
+            dirY = oldDirX * Math.sin(rot) + dirY * Math.cos(rot);
+            let oldPlaneX = planeX;
+            planeX = planeX * Math.cos(rot) - planeY * Math.sin(rot);
+            planeY = oldPlaneX * Math.sin(rot) + planeY * Math.cos(rot);
+        }
+    });
+
+    canvas.addEventListener('click', () => canvas.requestPointerLock());
     render();
 </script>
 </body>
