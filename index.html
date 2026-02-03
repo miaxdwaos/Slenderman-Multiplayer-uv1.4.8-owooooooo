@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Slender P2P - 3D Raycaster</title>
+    <title>Slender 3D - Global Sync & Chat</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         body { margin: 0; background: #000; color: white; font-family: 'Courier New', monospace; overflow: hidden; }
@@ -11,13 +11,24 @@
         .menu-btn { padding: 12px 24px; margin: 10px; cursor: pointer; background: #600; color: white; border: none; font-weight: bold; text-transform: uppercase; }
         #hud { position: absolute; top: 20px; left: 20px; font-size: 22px; display: none; text-shadow: 2px 2px #000; z-index: 10; }
         #msg-overlay { position: absolute; top: 40%; width: 100%; text-align: center; font-size: 40px; display: none; font-weight: bold; z-index: 200; }
-        #lobby-list { margin: 15px 0; text-align: left; background: #111; padding: 10px; border: 1px solid #333; }
+        
+        /* Estilos del Chat */
+        #chat-container { position: absolute; bottom: 20px; left: 20px; width: 300px; z-index: 300; display: none; }
+        #chat-box { height: 150px; overflow-y: auto; background: rgba(0,0,0,0.5); border: 1px solid #440000; padding: 5px; font-size: 14px; margin-bottom: 5px; display: flex; flex-direction: column; }
+        #chat-input { width: 100%; background: #111; border: 1px solid #600; color: white; padding: 5px; outline: none; }
+        .chat-msg { margin-bottom: 4px; border-bottom: 1px solid #222; }
+        .chat-victim { color: #f00; font-weight: bold; }
     </style>
 </head>
 <body>
 
     <div id="hud">PÁGINAS: <span id="pageCount">0</span> / 8</div>
     <div id="msg-overlay"></div>
+
+    <div id="chat-container">
+        <div id="chat-box"></div>
+        <input type="text" id="chat-input" placeholder="Presiona Enter para enviar..." maxlength="50">
+    </div>
 
     <div id="ui">
         <h1>SLENDER 3D</h1>
@@ -49,19 +60,12 @@
         const GameContentSlender = { PersonSpriteheh: new Image() };
         GameContentSlender.PersonSpriteheh.src = "PersonSpriteheh.jpg";
 
-        // Configuración Raycasting
         const TILE_SIZE = 64;
         const FOV = Math.PI / 3;
-        const MAP_SIZE = 20; // 20x20 tiles
-        
-        // El mapa es mayormente vacío con un borde de árboles/paredes
-        const worldMap = [];
-        for(let i=0; i<MAP_SIZE; i++) {
-            worldMap[i] = [];
-            for(let j=0; j<MAP_SIZE; j++) {
-                worldMap[i][j] = (i===0 || i===MAP_SIZE-1 || j===0 || j===MAP_SIZE-1) ? 1 : 0;
-            }
-        }
+        const MAP_SIZE = 20;
+        const worldMap = Array.from({length: MAP_SIZE}, (_, i) => 
+            Array.from({length: MAP_SIZE}, (_, j) => (i===0 || i===MAP_SIZE-1 || j===0 || j===MAP_SIZE-1 ? 1 : 0))
+        );
 
         let player = { name: "Victim 1", x: 150, y: 150, dir: 0, speed: 3, rotSpeed: 0.05, dead: false, color: "rgba(255, 0, 0, 0.4)" };
         let remotePlayer = { name: "Victim 2", x: -200, y: -200, dir: 0, active: false, dead: false, color: "rgba(0, 100, 255, 0.4)" };
@@ -70,18 +74,8 @@
         let collectedPages = 0;
         let gameRunning = false;
         let isHost = false;
+        let isChatting = false;
         let peer, conn;
-
-        // --- P2P & Lobby (Tu lógica anterior) ---
-        window.addEventListener('beforeunload', () => { if(conn && conn.open) conn.send({type:'DISCONNECT', victim:player.name}); });
-
-        function removeRemotePlayer(vName) {
-            remotePlayer.active = false;
-            const overlay = document.getElementById('msg-overlay');
-            overlay.innerText = `${vName} se ha ido...`;
-            overlay.style.display = "block";
-            setTimeout(() => { if(gameRunning) overlay.style.display="none"; else location.reload(); }, 3000);
-        }
 
         function showJoinInput() {
             document.getElementById('main-menu').style.display = 'none';
@@ -111,16 +105,46 @@
             });
         }
 
+        // --- Lógica de Chat ---
+        function addChatMessage(name, msg) {
+            const box = document.getElementById('chat-box');
+            const msgEl = document.createElement('div');
+            msgEl.className = 'chat-msg';
+            msgEl.innerHTML = `<span class="chat-victim">${name}:</span> ${msg}`;
+            box.appendChild(msgEl);
+            box.scrollTop = box.scrollHeight;
+        }
+
+        window.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && gameRunning) {
+                if (!isChatting) {
+                    isChatting = true;
+                    document.getElementById('chat-input').focus();
+                } else {
+                    const input = document.getElementById('chat-input');
+                    const text = input.value.trim();
+                    if (text !== "" && conn && conn.open) {
+                        conn.send({ type: 'CHAT', name: player.name, msg: text });
+                        addChatMessage(player.name, text);
+                    }
+                    input.value = "";
+                    input.blur();
+                    isChatting = false;
+                }
+            }
+        });
+
         function setupConnection() {
-            conn.on('open', () => { if(!isHost) remotePlayer.active = true; });
-            conn.on('close', () => removeRemotePlayer(remotePlayer.name));
             conn.on('data', data => {
                 if(data.type === 'PAGES_DATA') pages = data.pages;
                 if(data.type === 'START') startGame();
-                if(data.type === 'DISCONNECT') removeRemotePlayer(data.victim);
+                if(data.type === 'CHAT') addChatMessage(data.name, data.msg);
                 if(data.type === 'SYNC') {
                     remotePlayer.x = data.x; remotePlayer.y = data.y;
                     remotePlayer.dead = data.dead; remotePlayer.active = true;
+                    if(!isHost && data.sx !== undefined) {
+                        slender.x = data.sx; slender.y = data.sy;
+                    }
                 }
                 if(data.type === 'COLLECT') { pages[data.index].collected = true; checkPages(); }
             });
@@ -130,8 +154,10 @@
             for(let i=0; i<8; i++) {
                 pages.push({ x: Math.random()*800+100, y: Math.random()*800+100, collected: false });
             }
-            conn.send({ type: 'PAGES_DATA', pages: pages });
-            conn.send({ type: 'START' });
+            if(conn) {
+                conn.send({ type: 'PAGES_DATA', pages: pages });
+                conn.send({ type: 'START' });
+            }
             startGame();
         }
 
@@ -140,43 +166,43 @@
         function startGame() {
             document.getElementById('ui').style.display = 'none';
             document.getElementById('hud').style.display = 'block';
+            document.getElementById('chat-container').style.display = 'block';
             gameRunning = true;
             gameLoop();
         }
 
-        // --- Motor de Raycasting 3D ---
-        const keys = {};
-        window.onkeydown = e => keys[e.key.toLowerCase()] = true;
-        window.onkeyup = e => keys[e.key.toLowerCase()] = false;
-
         function update() {
-            if(!gameRunning || player.dead) return;
+            if(!gameRunning) return;
 
-            // Movimiento & Rotación
-            if(keys['a'] || keys['arrowleft']) player.dir -= player.rotSpeed;
-            if(keys['d'] || keys['arrowright']) player.dir += player.rotSpeed;
-            
-            let moveX = Math.cos(player.dir) * player.speed;
-            let moveY = Math.sin(player.dir) * player.speed;
-            
-            if(keys['w'] || keys['arrowup']) {
-                if(worldMap[Math.floor((player.y)/TILE_SIZE)][Math.floor((player.x+moveX)/TILE_SIZE)] === 0) player.x += moveX;
-                if(worldMap[Math.floor((player.y+moveY)/TILE_SIZE)][Math.floor(player.x/TILE_SIZE)] === 0) player.y += moveY;
+            // Bloquear movimiento si está chateando
+            if(!player.dead && !isChatting) {
+                if(keys['a'] || keys['arrowleft']) player.dir -= player.rotSpeed;
+                if(keys['d'] || keys['arrowright']) player.dir += player.rotSpeed;
+                let moveX = Math.cos(player.dir) * player.speed;
+                let moveY = Math.sin(player.dir) * player.speed;
+                if(keys['w'] || keys['arrowup']) {
+                    if(worldMap[Math.floor(player.y/TILE_SIZE)][Math.floor((player.x+moveX)/TILE_SIZE)] === 0) player.x += moveX;
+                    if(worldMap[Math.floor((player.y+moveY)/TILE_SIZE)][Math.floor(player.x/TILE_SIZE)] === 0) player.y += moveY;
+                }
+                if(keys['s'] || keys['arrowdown']) {
+                    if(worldMap[Math.floor(player.y/TILE_SIZE)][Math.floor((player.x-moveX)/TILE_SIZE)] === 0) player.x -= moveX;
+                    if(worldMap[Math.floor((player.y-moveY)/TILE_SIZE)][Math.floor(player.x/TILE_SIZE)] === 0) player.y -= moveY;
+                }
+                if(Math.hypot(player.x - slender.x, player.y - slender.y) < 30) player.dead = true;
             }
-            if(keys['s'] || keys['arrowdown']) {
-                if(worldMap[Math.floor((player.y)/TILE_SIZE)][Math.floor((player.x-moveX)/TILE_SIZE)] === 0) player.x -= moveX;
-                if(worldMap[Math.floor((player.y-moveY)/TILE_SIZE)][Math.floor(player.x/TILE_SIZE)] === 0) player.y -= moveY;
+
+            if(isHost) {
+                let target = (remotePlayer.active && !remotePlayer.dead) ? remotePlayer : player;
+                if(!player.dead && remotePlayer.active && !remotePlayer.dead) {
+                    let d1 = Math.hypot(player.x - slender.x, player.y - slender.y);
+                    let d2 = Math.hypot(remotePlayer.x - slender.x, remotePlayer.y - slender.y);
+                    target = d1 < d2 ? player : remotePlayer;
+                }
+                let ang = Math.atan2(target.y - slender.y, target.x - slender.x);
+                slender.x += Math.cos(ang) * slender.speed;
+                slender.y += Math.sin(ang) * slender.speed;
             }
 
-            // IA Slender (Sigue al vivo más cercano)
-            let target = (remotePlayer.active && !remotePlayer.dead) ? remotePlayer : player;
-            let angToTarget = Math.atan2(target.y - slender.y, target.x - slender.x);
-            slender.x += Math.cos(angToTarget) * slender.speed;
-            slender.y += Math.sin(angToTarget) * slender.speed;
-
-            if(Math.hypot(player.x - slender.x, player.y - slender.y) < 30) player.dead = true;
-
-            // Notas
             pages.forEach((p, idx) => {
                 if(!p.collected && Math.hypot(player.x - p.x, player.y - p.y) < 40) {
                     p.collected = true;
@@ -185,8 +211,18 @@
                 }
             });
 
-            if(conn && conn.open) conn.send({ type: 'SYNC', x: player.x, y: player.y, dead: player.dead });
+            if(conn && conn.open) {
+                let syncData = { type: 'SYNC', x: player.x, y: player.y, dead: player.dead };
+                if(isHost) { syncData.sx = slender.x; syncData.sy = slender.y; }
+                conn.send(syncData);
+            }
+
+            if(player.dead && (!remotePlayer.active || remotePlayer.dead)) showEndMsg("YOU LOSE", "red");
         }
+
+        const keys = {};
+        window.onkeydown = e => keys[e.key.toLowerCase()] = true;
+        window.onkeyup = e => keys[e.key.toLowerCase()] = false;
 
         function checkPages() {
             collectedPages = pages.filter(p => p.collected).length;
@@ -203,91 +239,58 @@
         }
 
         function draw() {
-            // Techo y Suelo
             ctx.fillStyle = "#111"; ctx.fillRect(0, 0, canvas.width, canvas.height/2);
             ctx.fillStyle = "#222"; ctx.fillRect(0, canvas.height/2, canvas.width, canvas.height/2);
 
-            // Paredes (Raycasting)
             for(let i=0; i<canvas.width; i+=2) {
                 let rayAngle = (player.dir - FOV/2) + (i/canvas.width) * FOV;
-                let distance = 0;
-                let hitWall = false;
-                
-                let sinA = Math.sin(rayAngle);
-                let cosA = Math.cos(rayAngle);
-
-                while(!hitWall && distance < 800) {
-                    distance += 2;
-                    let testX = Math.floor((player.x + cosA * distance) / TILE_SIZE);
-                    let testY = Math.floor((player.y + sinA * distance) / TILE_SIZE);
-                    if(worldMap[testY][testX] === 1) hitWall = true;
+                let dist = 0; let hit = false;
+                while(!hit && dist < 800) {
+                    dist += 2;
+                    let tx = Math.floor((player.x + Math.cos(rayAngle) * dist) / TILE_SIZE);
+                    let ty = Math.floor((player.y + Math.sin(rayAngle) * dist) / TILE_SIZE);
+                    if(worldMap[ty][tx] === 1) hit = true;
                 }
-
-                // Corregir efecto ojo de pez
-                distance *= Math.cos(player.dir - rayAngle);
-                let wallHeight = (TILE_SIZE * canvas.height) / distance;
-                let brightness = Math.min(255, 20000 / (distance + 1));
-                ctx.fillStyle = `rgb(${brightness/2}, 0, 0)`;
-                ctx.fillRect(i, (canvas.height - wallHeight)/2, 2, wallHeight);
+                dist *= Math.cos(player.dir - rayAngle);
+                let h = (TILE_SIZE * canvas.height) / dist;
+                let b = Math.min(150, 15000 / dist);
+                ctx.fillStyle = `rgb(${b}, 0, 0)`;
+                ctx.fillRect(i, (canvas.height - h)/2, 2, h);
             }
 
-            // Renderizar Objetos (Sprites 3D)
             const sprites = [];
             pages.forEach(p => { if(!p.collected) sprites.push({x: p.x, y: p.y, type: 'page'}); });
             if(remotePlayer.active) sprites.push({x: remotePlayer.x, y: remotePlayer.y, type: 'victim'});
             sprites.push({x: slender.x, y: slender.y, type: 'slender'});
 
-            // Ordenar por distancia (Pintar de lejos a cerca)
-            sprites.sort((a, b) => Math.hypot(player.x - b.x, player.y - b.y) - Math.hypot(player.x - a.x, player.y - a.y));
+            sprites.sort((a,b) => Math.hypot(player.x-b.x, player.y-b.y) - Math.hypot(player.x-a.x, player.y-a.y));
 
             sprites.forEach(s => {
-                let dx = s.x - player.x;
-                let dy = s.y - player.y;
+                let dx = s.x - player.x; let dy = s.y - player.y;
                 let dist = Math.hypot(dx, dy);
                 let angle = Math.atan2(dy, dx) - player.dir;
-                
-                // Normalizar ángulo
-                while(angle < -Math.PI) angle += 2 * Math.PI;
-                while(angle > Math.PI) angle -= 2 * Math.PI;
+                while(angle < -Math.PI) angle += 2*Math.PI; while(angle > Math.PI) angle -= 2*Math.PI;
 
                 if(Math.abs(angle) < FOV) {
-                    let screenX = (0.5 * (angle / (FOV/2)) + 0.5) * canvas.width;
+                    let sx = (0.5 * (angle / (FOV/2)) + 0.5) * canvas.width;
                     let h = (TILE_SIZE * canvas.height) / (dist * Math.cos(angle));
-                    let w = h;
-
                     if(s.type === 'slender') {
-                        ctx.fillStyle = "black";
-                        ctx.fillRect(screenX - w/4, (canvas.height - h)/2, w/2, h);
-                        ctx.fillStyle = "white";
-                        ctx.fillRect(screenX - w/6, (canvas.height - h)/2 - h/6, w/3, h/6);
+                        ctx.fillStyle = "black"; ctx.fillRect(sx - h/4, (canvas.height-h)/2, h/2, h);
                     } else if(s.type === 'page') {
-                        ctx.fillStyle = "white";
-                        ctx.fillRect(screenX - w/10, canvas.height/2, w/5, h/4);
+                        ctx.fillStyle = "white"; ctx.fillRect(sx - h/10, canvas.height/2, h/5, h/4);
                     } else if(s.type === 'victim') {
                         ctx.save();
-                        if(remotePlayer.dead) ctx.globalAlpha = 0.5;
-                        ctx.drawImage(GameContentSlender.PersonSpriteheh, screenX - w/2, (canvas.height - h)/2, w, h);
-                        ctx.fillStyle = remotePlayer.color;
-                        ctx.fillRect(screenX - w/2, (canvas.height - h)/2, w, h);
+                        if(remotePlayer.dead) ctx.globalAlpha = 0.3;
+                        ctx.drawImage(GameContentSlender.PersonSpriteheh, sx - h/2, (canvas.height-h)/2, h, h);
+                        ctx.fillStyle = remotePlayer.color; ctx.fillRect(sx - h/2, (canvas.height-h)/2, h, h);
                         ctx.restore();
                     }
                 }
             });
-            
-            if(player.dead) {
-                ctx.fillStyle = "rgba(100,0,0,0.5)";
-                ctx.fillRect(0,0,canvas.width, canvas.height);
-                ctx.fillStyle = "white";
-                ctx.font = "30px Courier New";
-                ctx.fillText("ESTÁS MUERTO", canvas.width/2 - 100, canvas.height/2);
-            }
+            if(player.dead) { ctx.fillStyle = "rgba(100,0,0,0.5)"; ctx.fillRect(0,0,canvas.width,canvas.height); }
         }
 
-        function gameLoop() {
-            update();
-            draw();
-            if(gameRunning) requestAnimationFrame(gameLoop);
-        }
+        function gameLoop() { update(); draw(); if(gameRunning) requestAnimationFrame(gameLoop); }
     </script>
 </body>
 </html>
